@@ -585,6 +585,7 @@ class WXAPI(object):
         }
 
         r = requests.post(url, data=multipart_encoder, headers=headers)
+        dic = json.loads(r.text)  #修复无法发送Media消息BUG
         if dic['BaseResponse']['Ret'] == 0:
             return dic
         return None
@@ -766,8 +767,11 @@ class WXAPI(object):
         @param      text  String
         @return     Bool: whether operation succeed
         """
-        dic = self.webwxsendmsg(text, user_id)
-        return dic['BaseResponse']['Ret'] == 0
+        try:
+            dic = self.webwxsendmsg(text, user_id)
+            return dic['BaseResponse']['Ret'] == 0
+        except:
+            return False
 
     def send_img(self, user_id, file_path):
         """

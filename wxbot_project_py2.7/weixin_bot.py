@@ -6,13 +6,14 @@ from wechat import WeChat
 from wechat.utils import *
 from wx_handler import WeChatMsgProcessor
 from wx_handler import Bot
+from wx_handler import SGMail
 from db import SqliteDB
 from db import MysqlDB
 from config import ConfigManager
 from config import Constant
 from config import Log
 #---------------------------------------------------
-import flask
+from flask import Flask, render_template, send_file, jsonify, request
 import threading
 import traceback
 import os
@@ -32,7 +33,7 @@ wechat.msg_handler = wechat_msg_processor
 wechat_msg_processor.wechat = wechat
 
 PORT = int(cm.get('setting', 'server_port'))
-app = flask.Flask(__name__)
+app = Flask(__name__, template_folder='flask_templates')
 app.config['UPLOAD_FOLDER'] = cm.getpath('uploaddir')
 
 logger = logging.getLogger('werkzeug')
@@ -44,11 +45,15 @@ flask_log_handler.setFormatter(formatter)
 logger.addHandler(flask_log_handler)
 app.logger.addHandler(flask_log_handler)
 
+# sendgrid mail
+sg_apikey = cm.get('sendgrid', 'api_key')
+from_email = cm.get('sendgrid', 'from_email')
+to_email = cm.get('sendgrid', 'to_email')
+sg = SGMail(sg_apikey, from_email, to_email)
 
 @app.route('/')
 def index():
-    with open(Constant.SERVER_PAGE_INDEX, 'r') as f:
-        return f.read()
+    return render_template(Constant.SERVER_PAGE_INDEX)
 
 
 @app.route('/qrcode')
@@ -59,7 +64,7 @@ def qrcode():
     image_path = '%s/%s_%d.png' % (qdir, wechat.uuid, int(time.time()*100))
     s = wechat.wx_conf['API_qrcode'] + wechat.uuid
     str2qr_image(s, image_path)
-    return flask.send_file(image_path, mimetype='image/png')
+    return send_file(image_path, mimetype='image/png')
 
 
 @app.route("/group_list")
@@ -68,8 +73,7 @@ def group_list():
     @brief      list groups
     """
     result = wechat.db.select(Constant.TABLE_GROUP_LIST())
-    j = {'count': len(result), 'group': result}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'count': len(result), 'group': result})
 
 
 @app.route('/group_member_list/<g_id>')
@@ -79,8 +83,7 @@ def group_member_list(g_id):
     @param      g_id String
     """
     result = wechat.db.select(Constant.TABLE_GROUP_USER_LIST(), 'RoomID', g_id)
-    j = {'count': len(result), 'member': result}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'count': len(result), 'member': result})
 
 
 @app.route('/group_chat_log/<g_name>')
@@ -90,13 +93,12 @@ def group_chat_log(g_name):
     @param      g_name String
     """
     result = wechat.db.select(Constant.TABLE_GROUP_MSG_LOG, 'RoomName', g_name)
-    j = {'count': len(result), 'chats': result}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'count': len(result), 'chats': result})
 
 
 @app.route('/upload', methods=['GET', 'POST'])
 def upload_file():
-    if flask.request.method == 'POST':
+    if request.method == 'POST':
         def allowed_file(filename):
             return '.' in filename and \
                 filename.rsplit('.', 1)[1] in Constant.SERVER_UPLOAD_ALLOWED_EXTENSIONS
@@ -104,13 +106,13 @@ def upload_file():
         j = {'ret': 1, 'msg': ''}
 
         # check if the post request has the file part
-        if 'file' not in flask.request.files:
+        if 'file' not in request.files:
             j['msg'] = 'No file part'
-            return flask.Response(json.dumps(j), mimetype='application/json')
+            return jsonify(j)
 
         # if user does not select file, browser also
         # submit a empty part without filename
-        file = flask.request.files['file']  
+        file = request.files['file']
         if file.filename == '':
             j['msg'] = 'No selected file'
         elif file and allowed_file(file.filename):
@@ -121,10 +123,9 @@ def upload_file():
             j['msg'] = filename
         else:
             j['msg'] = 'File type not support'
-        return flask.Response(json.dumps(j), mimetype='application/json')
+        return jsonify(j)
     else:
-        with open(Constant.SERVER_PAGE_UPLOAD, 'r') as f:
-            return f.read()
+        return render_template(Constant.SERVER_PAGE_UPLOAD)
 
 
 @app.route('/send_msg/<to>/<msg>')
@@ -134,8 +135,7 @@ def send_msg(to, msg):
     @param      to: String, user id or group id
     @param      msg: String, words
     """
-    j = {'ret': 0 if wechat.send_text(to, msg) else 1}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'ret': 0 if wechat.send_text(to, msg) else 1})
 
 
 @app.route('/send_img/<to>/<img>')
@@ -146,8 +146,7 @@ def send_img(to, img):
     @param      img: String, image file name
     """
     img_path = os.path.join(app.config['UPLOAD_FOLDER'], img)
-    j = {'ret': 0 if wechat.send_img(to, img_path) else 1}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'ret': 0 if wechat.send_img(to, img_path) else 1})
 
 
 @app.route('/send_emot/<to>/<emot>')
@@ -158,8 +157,7 @@ def send_emot(to, emot):
     @param      emot: String, emotion file name
     """
     emot_path = os.path.join(app.config['UPLOAD_FOLDER'], emot)
-    j = {'ret': 0 if wechat.send_emot(to, emot_path) else 1}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'ret': 0 if wechat.send_emot(to, emot_path) else 1})
 
 
 @app.route('/send_file/<to>/<file>')
@@ -170,8 +168,7 @@ def send_file(to, file):
     @param      file: String, file name
     """
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], file)
-    j = {'ret': 0 if wechat.send_file(to, file_path) else 1}
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    return jsonify({'ret': 0 if wechat.send_file(to, file_path) else 1})
 
 
 def mass_send(method, data, func):
@@ -221,8 +218,8 @@ def mass_send_msg():
     """
     @brief      send text to mass users or gourps
     """
-    j = mass_send(flask.request.method, flask.request.json, wechat.send_text)
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    j = mass_send(request.method, request.json, wechat.send_text)
+    return jsonify(j)
 
 
 @app.route('/mass_send_img', methods=["GET", "POST"])
@@ -230,8 +227,8 @@ def mass_send_img():
     """
     @brief      send iamge to mass users or gourps
     """
-    j = mass_send(flask.request.method, flask.request.json, wechat.webwxsendmsgimg)
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    j = mass_send(request.method, request.json, wechat.webwxsendmsgimg)
+    return jsonify(j)
 
 
 @app.route('/mass_send_emot', methods=["GET", "POST"])
@@ -239,8 +236,8 @@ def mass_send_emot():
     """
     @brief      send emoticon to mass users or gourps
     """
-    j = mass_send(flask.request.method, flask.request.json, wechat.webwxsendemoticon)
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    j = mass_send(request.method, request.json, wechat.webwxsendemoticon)
+    return jsonify(j)
 
 
 @app.route('/mass_send_file', methods=["GET", "POST"])
@@ -248,8 +245,8 @@ def mass_send_file():
     """
     @brief      send file to mass users or gourps
     """
-    j = mass_send(flask.request.method, flask.request.json, wechat.webwxsendappmsg)
-    return flask.Response(json.dumps(j), mimetype='application/json')
+    j = mass_send(request.method, request.json, wechat.webwxsendappmsg)
+    return jsonify(j)
 
 
 def run_server():
@@ -269,10 +266,16 @@ while True:
         Log.error(traceback.format_exc())
     finally:
         wechat.stop()
+    
+    # send a mail to tell the wxbot is failing
+    subject = 'wxbot stop message'
+    log_file = open(eval(cm.get('handler_fileHandler', 'args'))[0], 'r')
+    mail_content = '<pre>' + str(wechat) + '\n\n-----\nLogs:\n-----\n\n' + ''.join(log_file.readlines()[-100:]) + '</pre>'
+    sg.send_mail(subject, mail_content, 'text/html')
+    log_file.close()
 
     if wechat.exit_code == 0:
         echo(Constant.MAIN_RESTART)
     else:
         # kill process
         os.system(Constant.LOG_MSG_KILL_PROCESS % os.getpid())
-
